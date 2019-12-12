@@ -1,6 +1,7 @@
-Discourse Mobile
+Discourse Mobile for Single Site
 ---
-
+Forked from https://github.com/discourse/DiscourseMobile. 
+I want to remove the multi-site support, and add native third party logins such as Google, Facebook, Twitter ...
 Native iOS and Android app for Discourse
 
 ### Getting Started
