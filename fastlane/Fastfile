@@ -2,15 +2,11 @@ fastlane_require "base64"
 fastlane_require "fileutils"
 fastlane_require "json"
 
-IOS_APP_VERSION = "1.5.4"
-ANDROID_APP_VERSION = "1.5.4"
+IOS_APP_VERSION = "1.6.5"
+ANDROID_APP_VERSION = "1.6.2"
 PROJECT_NAME = "Discourse"
 IOS_TEAM_ID = "6T3LU73T8S"
 KEYS_REPOSITORY = "git@github.com:discourse-org/discourse-mobile-keys.git"
-
-fastlane_version "2.89.0"
-
-# xcode_select "/Applications/Xcode11-beta.app"
 
 default_platform :ios
 
@@ -63,15 +59,9 @@ MYAPP_RELEASE_STORE_PASSWORD=#{google_key_store_password}
 MYAPP_RELEASE_KEY_PASSWORD=#{google_key_store_password}
 android.useAndroidX=true
 android.enableJetifier=true
+FLIPPER_VERSION=0.41.0
 TEMPLATE
   File.write(File.expand_path("../android/gradle.properties"), gradle_properties)
-
-  android_fabric_properties = <<TEMPLATE
-# Generated from `fastlane bootstrap` do not edit or commit
-apiSecret=#{fabric_build_secret}
-apiKey=#{fabric_api_key}
-TEMPLATE
-  File.write(File.expand_path("../android/app/fabric.properties"), android_fabric_properties)
 
   key_store = Base64.decode64(File.open("my-release-key.keystore").read)
   File.write(File.expand_path("../android/app/my-release-key.keystore"), key_store)
@@ -89,19 +79,17 @@ def google_key_store_password
   @google_key_store_password ||= secrets["google_key_store_password"]
 end
 
-def fabric_build_secret
-  @fabric_build_secret ||= secrets["fabric_build_secret"]
-end
-
-def fabric_api_key
-  @fabric_api_key ||= secrets["fabric_api_key"]
-end
-
 platform :ios do
   before_all do
     increment_version_number_in_plist(
       xcodeproj: "./ios/#{PROJECT_NAME}.xcodeproj",
       target: PROJECT_NAME,
+      version_number: IOS_APP_VERSION
+    )
+
+    increment_version_number_in_plist(
+      xcodeproj: "./ios/#{PROJECT_NAME}.xcodeproj",
+      target: "ShareExtension",
       version_number: IOS_APP_VERSION
     )
 
@@ -116,55 +104,34 @@ platform :ios do
 
     register_devices(devices_file: File.expand_path("./keys/ios-beta-devices.txt"))
 
-    match(force: true, type: "appstore", git_url: KEYS_REPOSITORY)
-    match(force: true, type: "adhoc", git_url: KEYS_REPOSITORY)
-    match(force: true, type: "development", git_url: KEYS_REPOSITORY)
-  end
-
-  desc "Submit a new Beta Build to Fabric -> Beta"
-  desc "This will also make sure the profile is up to date"
-  lane :beta do
-    gym(
-      scheme: PROJECT_NAME,
-      clean: true,
-      export_method: "ad-hoc",
-      export_options: {
-        provisioningProfiles: {
-          "org.discourse.DiscourseApp" => "match AdHoc org.discourse.DiscourseApp"
-        }
-      },
-      project: "./ios/#{PROJECT_NAME}.xcodeproj",
-      export_xcargs: "-allowProvisioningUpdates"
+    match(
+      force: true,
+      type: "appstore",
+      git_url: KEYS_REPOSITORY,
+      app_identifier: ["org.discourse.DiscourseApp", "org.discourse.DiscourseApp.ShareExtension"]
     )
-
-    crashlytics(
-      api_token: fabric_api_key,
-      build_secret: fabric_build_secret,
-      notifications: true
+    match(
+      force: true,
+      type: "adhoc",
+      git_url: KEYS_REPOSITORY,
+      app_identifier: ["org.discourse.DiscourseApp", "org.discourse.DiscourseApp.ShareExtension"]
     )
+    # match(force: true, type: "development", git_url: KEYS_REPOSITORY)
   end
 
   desc "Submit a new build to Testflight"
   lane :release do
-    register_devices(
-      devices_file: File.expand_path("./keys/ios-beta-devices.txt")
-    )
-
     gym(
       scheme: PROJECT_NAME,
       export_method: "app-store",
       export_options: {
         provisioningProfiles: {
-          "org.discourse.DiscourseApp" => "match AppStore org.discourse.DiscourseApp 1566494554"
+          "org.discourse.DiscourseApp" => "match AppStore org.discourse.DiscourseApp",
+          "org.discourse.DiscourseApp.ShareExtension" => "match AppStore org.discourse.DiscourseApp.ShareExtension"
         }
       },
       clean: true,
-      project: "./ios/#{PROJECT_NAME}.xcodeproj"
-    )
-
-    upload_symbols_to_crashlytics(
-      api_token: fabric_api_key,
-      binary_path: ENV["IPA_OUTPUT_PATH"]
+      workspace: "./ios/#{PROJECT_NAME}.xcworkspace"
     )
 
     `cp ../Discourse.ipa ../releases/Discourse.ipa`
@@ -173,6 +140,24 @@ platform :ios do
       username: apple_id,
       beta_app_feedback_email: apple_id
     )
+  end
+
+  desc "Install on connected device"
+  lane :install do
+    gym(
+      scheme: PROJECT_NAME,
+      export_method: "ad-hoc",
+      export_options: {
+        provisioningProfiles: {
+          "org.discourse.DiscourseApp" => "match AdHoc org.discourse.DiscourseApp",
+          "org.discourse.DiscourseApp.ShareExtension" => "match AdHoc org.discourse.DiscourseApp.ShareExtension"
+        }
+      },
+      clean: true,
+      workspace: "./ios/#{PROJECT_NAME}.xcworkspace"
+    )
+
+    install_on_device
   end
 end
 
@@ -183,14 +168,22 @@ platform :android do
     )
   end
 
-  desc "Submit a new Beta Build to Fabric -> Beta"
-  lane :beta do
-    unless ENV["ANDROID_HOME"]
-      STDOUT.puts("ANDROID_HOME env variable not set, set it android sdk location")
-      ENV["ANDROID_HOME"] = STDIN.gets.chomp
-    end
+  desc "Build APK and install on device"
+  lane :install do
+    gradle(
+      task: "assemble",
+      build_type: "Release",
+      project_dir: "android/"
+    )
 
-    `cd ../android && ./gradlew assembleRelease crashlyticsUploadDistributionRelease`
+    lane_context[SharedValues::GRADLE_ALL_APK_OUTPUT_PATHS].each do | apk |
+      puts "Uploading APK to Device: " + apk
+      begin
+        adb(command: "install -r #{apk}")
+      rescue => ex
+        puts ex
+      end
+    end
   end
 
   desc "Submit a build to Google Play Store"

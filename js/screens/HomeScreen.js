@@ -1,31 +1,26 @@
 /* @flow */
-"use strict";
+'use strict';
 
-import React from "react";
+import React from 'react';
 
 import {
   Alert,
-  AppState,
   Animated,
   Easing,
-  Linking,
-  NativeModules,
-  Platform,
-  PushNotificationIOS,
   RefreshControl,
+  SafeAreaView,
   StyleSheet,
   UIManager,
-  View
-} from "react-native";
+  View,
+} from 'react-native';
 
-import { SafeAreaView } from "react-navigation";
-import SortableListView from "react-native-sortable-listview";
-import SafariWebAuth from "react-native-safari-web-auth";
-import BackgroundFetch from "../../lib/background-fetch";
+import DraggableFlatList from 'react-native-draggable-dynamic-flatlist';
+import SafariWebAuth from 'react-native-safari-web-auth';
 
-import Site from "../site";
-import Components from "./HomeScreenComponents";
-import colors from "../colors";
+import Site from '../site';
+import Components from './HomeScreenComponents';
+
+import {ThemeContext} from '../ThemeContext';
 
 UIManager.setLayoutAnimationEnabledExperimental &&
   UIManager.setLayoutAnimationEnabledExperimental(true);
@@ -40,25 +35,26 @@ class HomeScreen extends React.Component {
       addSiteProgress: 0,
       displayTermBar: false,
       anim: new Animated.Value(0),
-      data: this._siteManager.toObject(),
+      data: [],
       isRefreshing: false,
       lastRefreshTime: null,
       scrollEnabled: true,
       refreshingEnabled: true,
-      rightButtonIconColor: colors.grayUI,
-      loadingSites: this._siteManager.isLoading()
+      loadingSites: this._siteManager.isLoading(),
     };
 
     this._onChangeSites = e => this.onChangeSites(e);
+    this._dragItem = this._dragItem.bind(this);
+    this._renderItem = this._renderItem.bind(this);
   }
 
-  visitSite(site) {
+  visitSite(site, connect = false) {
     this._siteManager.setActiveSite(site);
 
     if (site.authToken) {
       if (site.oneTimePassword) {
         this.props.screenProps.openUrl(
-          `${site.url}/session/otp/${site.oneTimePassword}`
+          `${site.url}/session/otp/${site.oneTimePassword}`,
         );
       } else {
         if (this._siteManager.supportsDelegatedAuth(site)) {
@@ -72,80 +68,21 @@ class HomeScreen extends React.Component {
       return;
     }
 
-    this._siteManager.generateAuthURL(site).then(url => {
-      if (this._siteManager.supportsDelegatedAuth(site)) {
-        SafariWebAuth.requestAuth(url);
-      } else {
-        this.props.screenProps.openUrl(url, false);
-      }
-    });
+    if (connect || site.loginRequired) {
+      this._siteManager.generateAuthURL(site).then(url => {
+        if (this._siteManager.supportsDelegatedAuth(site)) {
+          SafariWebAuth.requestAuth(url);
+        } else {
+          this.props.screenProps.openUrl(url, false);
+        }
+      });
+    } else {
+      this.props.screenProps.openUrl(`${site.url}`);
+    }
   }
 
   componentDidMount() {
-    if (Platform.OS === "ios") {
-      let doRefresh = () => {
-        console.log("Background fetch Called!");
-
-        this._siteManager
-          .refreshSites({ ui: false, fast: true, background: true })
-          .then(state => {
-            console.log("Finished refreshing sites in BG fetch!");
-            console.log(state);
-
-            if (state.alerts) {
-              console.log("Got " + state.alerts.length + " alert in BG fetch");
-
-              state.alerts.forEach(a => {
-                if (a.excerpt) {
-                  let excerpt = a.username + ": " + a.excerpt;
-                  excerpt = excerpt.substr(0, 250);
-
-                  if (!a.site.hasPush) {
-                    console.log(
-                      `publishing local notifications for ${a.site.url}`
-                    );
-                    PushNotificationIOS.presentLocalNotification({
-                      alertBody: excerpt,
-                      userInfo: { discourse_url: a.url }
-                    });
-                  }
-                }
-              });
-            }
-          })
-          .catch(e => {
-            console.log("WARN: failed in bg fetch");
-            console.log(e);
-          })
-          .finally(() => {
-            PushNotificationIOS.checkPermissions(p => {
-              if (p.badge) {
-                let total = this._siteManager.totalUnread();
-                console.log("Setting badge to " + total);
-                PushNotificationIOS.setApplicationIconBadgeNumber(total);
-              }
-
-              console.log("finishing up background fetch");
-              BackgroundFetch.done(true);
-            });
-          });
-      };
-
-      BackgroundFetch.addEventListener("backgroundFetch", () => {
-        if (this._siteManager.refreshing) {
-          // assume prviously aborted and force allow a refresh
-          console.log(
-            "WARNING: forcing refresh cause _siteManager was stuck refreshing"
-          );
-          this._siteManager.refreshing = false;
-        }
-
-        doRefresh();
-      });
-    }
-
     this._siteManager.subscribe(this._onChangeSites);
-    this._siteManager.refreshInterval(15000);
     this._onChangeSites();
   }
 
@@ -155,10 +92,10 @@ class HomeScreen extends React.Component {
 
   onChangeSites(e) {
     if (this._siteManager.isLoading() !== this.state.loadingSites) {
-      this.setState({ loadingSites: this._siteManager.isLoading() });
+      this.setState({loadingSites: this._siteManager.isLoading()});
     }
-    if (e && e.event === "change") {
-      this.setState({ data: this._siteManager.toObject() });
+    if (e && e.event) {
+      this.setState({data: this._siteManager.listSites()});
     }
   }
 
@@ -167,7 +104,7 @@ class HomeScreen extends React.Component {
       return new Promise((resolve, reject) => reject());
     }
 
-    this.setState({ addSiteProgress: Math.random() * 0.4 });
+    this.setState({addSiteProgress: Math.random() * 0.4});
 
     return new Promise((resolve, reject) => {
       Site.fromTerm(term)
@@ -175,16 +112,16 @@ class HomeScreen extends React.Component {
           this.setState(
             {
               displayTermBar: false,
-              addSiteProgress: 1
+              addSiteProgress: 1,
             },
             () => {
               this.onToggleTermBar(this.state.displayTermBar);
-            }
+            },
           );
 
           if (site) {
             if (this._siteManager.exists(site)) {
-              throw "dupe site";
+              throw 'dupe site';
             }
             this._siteManager.add(site);
           }
@@ -194,44 +131,41 @@ class HomeScreen extends React.Component {
         .catch(e => {
           console.log(e);
 
-          if (e === "dupe site") {
+          if (e === 'dupe site') {
             Alert.alert(`${term} already exists`);
-          } else if (e === "bad api") {
+          } else if (e === 'bad api') {
             Alert.alert(
-              `Sorry, ${term} is not a correct URL to a Discourse forum or does not support mobile APIs, have owner upgrade Discourse to latest!`
+              `Sorry, ${term} is not a correct URL to a Discourse forum or does not support mobile APIs, have owner upgrade Discourse to latest!`,
             );
           } else {
             Alert.alert(`${term} was not found!`);
           }
 
-          this.setState({ displayTermBar: true, addSiteProgress: 1 });
+          this.setState({displayTermBar: true, addSiteProgress: 1});
 
-          reject("failure");
+          reject('failure');
         })
         .finally(() => {
           setTimeout(() => {
-            this.setState({ addSiteProgress: 0 });
+            this.setState({addSiteProgress: 0});
           }, 1000);
         })
         .done();
     });
   }
 
-  refreshSites(opts) {
-    if (this.refreshing) {
-      return false;
-    }
+  pullDownToRefresh() {
+    console.log('pullDownToRefresh');
+    this.setState({isRefreshing: true});
 
-    if (opts.ui) {
-      this.setState({ isRefreshing: true });
-    }
-
-    this._siteManager.refreshSites(opts).then(() => {
-      this.refreshing = false;
-      this.setState({
-        isRefreshing: false
+    this._siteManager
+      .refreshSites()
+      .catch(e => {
+        console.log(e);
+      })
+      .done(() => {
+        this.setState({isRefreshing: false});
       });
-    });
   }
 
   shouldDisplayOnBoarding() {
@@ -246,20 +180,43 @@ class HomeScreen extends React.Component {
 
   _renderDebugRow() {
     if (this._siteManager.sites.length !== 0) {
-      return <Components.DebugRow siteManager={this._siteManager} />;
+      return (
+        <Components.DebugRow
+          siteManager={this._siteManager}
+          toggleTheme={this.props.screenProps.toggleTheme}
+        />
+      );
     }
   }
 
+  _renderItem({item, index, move, moveEnd, isActive}) {
+    return (
+      <Components.SiteRow
+        site={item}
+        onSwipe={scrollEnabled => this.setState({scrollEnabled: scrollEnabled})}
+        onClick={() => this.visitSite(item)}
+        onClickConnect={() => this.visitSite(item, true)}
+        onDelete={() => this._siteManager.remove(item)}
+        onLongPress={move}
+      />
+    );
+  }
+
+  _dragItem({data, from, to}) {
+    this._siteManager.updateOrder(from, to);
+  }
+
   _renderSites() {
+    const theme = this.context;
     if (this.state.loadingSites) {
-      return <View style={{ flex: 1 }} />;
+      return <View style={{flex: 1}} />;
     }
 
     if (this.shouldDisplayOnBoarding()) {
       return (
         <Components.OnBoardingView
           onDidPressAddSite={() =>
-            this.setState({ displayTermBar: true }, () => {
+            this.setState({displayTermBar: true}, () => {
               this.onToggleTermBar(this.state.displayTermBar);
             })
           }
@@ -272,52 +229,22 @@ class HomeScreen extends React.Component {
       );
     } else {
       return (
-        <SortableListView
+        <DraggableFlatList
           data={this.state.data}
-          order={Object.keys(this.state.data)}
-          scrollEnabled={this.state.scrollEnabled}
-          enableEmptySections={true}
-          activeOpacity={0.5}
-          disableAnimatedScrolling={true}
-          styles={styles.list}
-          rowHasChanged={(r1, r2) => {
-            // TODO: r2 returns as an Object instead of a Site
-            // casting Site shouldn't be needed
-            return new Site(r1).toJSON() !== new Site(r2).toJSON();
-          }}
-          onRowMoved={e => {
-            this._siteManager.updateOrder(e.from, e.to);
-            this.forceUpdate();
-          }}
-          onRowActive={() => {
-            this.setState({ refreshingEnabled: false });
-          }}
-          onMoveEnd={() => {
-            this.setState({ refreshingEnabled: true });
-          }}
-          onMoveCancel={() => {
-            this.setState({ refreshingEnabled: true });
-          }}
+          renderItem={item => this._renderItem(item)}
+          keyExtractor={(item, index) => `draggable-item-${item.url}`}
+          onMoveEnd={this._dragItem}
+          scaleSelectionFactor={1.05}
           refreshControl={
             <RefreshControl
-              style={{ left: 500 }}
+              style={{left: 500}}
               enabled={this.state.refreshingEnabled}
               refreshing={this.state.isRefreshing}
-              onRefresh={() => this.refreshSites({ ui: true, fast: false })}
+              onRefresh={() => this.pullDownToRefresh()}
               title="Loading..."
-              titleColor={colors.graySubtitle}
+              titleColor={theme.graySubtitle}
             />
           }
-          renderRow={site => (
-            <Components.SiteRow
-              site={site}
-              onSwipe={scrollEnabled =>
-                this.setState({ scrollEnabled: scrollEnabled })
-              }
-              onClick={() => this.visitSite(site)}
-              onDelete={() => this._siteManager.remove(site)}
-            />
-          )}
         />
       );
     }
@@ -328,7 +255,7 @@ class HomeScreen extends React.Component {
       easing: Easing.inOut(Easing.ease),
       duration: 200,
       toValue: show ? 1 : 0,
-      useNativeDriver: true
+      useNativeDriver: true,
     }).start(() => {
       if (this._input) {
         show ? this._input.focus() : this._input.blur();
@@ -337,31 +264,29 @@ class HomeScreen extends React.Component {
   }
 
   onDidPressLeftButton() {
-    this.setState({ displayTermBar: !this.state.displayTermBar }, () => {
+    this.setState({displayTermBar: !this.state.displayTermBar}, () => {
       this.onToggleTermBar(this.state.displayTermBar);
     });
   }
 
   onDidPressRighButton() {
-    this.props.navigation.navigate("Notifications");
+    this.props.navigation.navigate('Notifications');
   }
 
   render() {
-    // left 500 on refresh control so it does not render incorrectly when
-    // not refreshing
+    const theme = this.context;
     const translateY = this.state.anim.interpolate({
       inputRange: [0, 1],
-      outputRange: [0, Components.TermBar.Height]
+      outputRange: [0, Components.TermBar.Height],
     });
     return (
       <SafeAreaView
-        style={styles.container}
-        forceInset={{ top: "never", bottom: "always" }}
-      >
+        style={[styles.container, {backgroundColor: theme.background}]}
+        forceInset={{top: 'never', bottom: 'always'}}>
         <Components.NavigationBar
           leftButtonIconRotated={this.state.displayTermBar ? true : false}
           anim={this.state.anim}
-          rightButtonIconColor={this.state.rightButtonIconColor}
+          rightButtonIconColor={theme.grayUI}
           onDidPressLeftButton={() => this.onDidPressLeftButton()}
           onDidPressRightButton={() => this.onDidPressRighButton()}
           progress={this.state.addSiteProgress}
@@ -372,8 +297,7 @@ class HomeScreen extends React.Component {
           onDidSubmitTerm={term => this.doSearch(term)}
         />
         <Animated.View
-          style={[styles.sitesContainer, { transform: [{ translateY }] }]}
-        >
+          style={[styles.sitesContainer, {transform: [{translateY}]}]}>
           {this._renderSites()}
           {this._renderDebugRow()}
         </Animated.View>
@@ -381,19 +305,19 @@ class HomeScreen extends React.Component {
     );
   }
 }
+HomeScreen.contextType = ThemeContext;
 
 const styles = StyleSheet.create({
   list: {
-    flex: 1
+    flex: 1,
   },
   container: {
     flex: 1,
-    backgroundColor: colors.grayBackground
   },
   sitesContainer: {
     flex: 1,
-    marginTop: -Components.TermBar.Height
-  }
+    marginTop: -Components.TermBar.Height,
+  },
 });
 
 export default HomeScreen;

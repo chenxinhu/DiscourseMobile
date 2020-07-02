@@ -1,11 +1,3 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
- * All rights reserved.
- *
- * This source code is licensed under the BSD-style license found in the
- * LICENSE file in the root directory of this source tree. An additional grant
- * of patent rights can be found in the PATENTS file in the same directory.
- */
 
 #import "AppDelegate.h"
 
@@ -13,27 +5,44 @@
 #import <React/RCTBundleURLProvider.h>
 #import <React/RCTRootView.h>
 #import <React/RCTLinkingManager.h>
-#import <React/RCTPushNotificationManager.h>
 #import <React/RCTLog.h>
-#import "RNBackgroundFetch.h"
-#import "Orientation.h"
-#import <Fabric/Fabric.h>
-#import <Crashlytics/Crashlytics.h>
 #import <UserNotifications/UserNotifications.h>
+#import <RNCPushNotificationIOS.h>
 
 @import Photos;
 @import AVFoundation;
+
+#if DEBUG
+#import <FlipperKit/FlipperClient.h>
+#import <FlipperKitLayoutPlugin/FlipperKitLayoutPlugin.h>
+#import <FlipperKitUserDefaultsPlugin/FKUserDefaultsPlugin.h>
+#import <FlipperKitNetworkPlugin/FlipperKitNetworkPlugin.h>
+#import <SKIOSNetworkPlugin/SKIOSNetworkAdapter.h>
+#import <FlipperKitReactPlugin/FlipperKitReactPlugin.h>
+
+static void InitializeFlipper(UIApplication *application) {
+  FlipperClient *client = [FlipperClient sharedClient];
+  SKDescriptorMapper *layoutDescriptorMapper = [[SKDescriptorMapper alloc] initWithDefaults];
+  [client addPlugin:[[FlipperKitLayoutPlugin alloc] initWithRootNode:application withDescriptorMapper:layoutDescriptorMapper]];
+  [client addPlugin:[[FKUserDefaultsPlugin alloc] initWithSuiteName:nil]];
+  [client addPlugin:[FlipperKitReactPlugin new]];
+  [client addPlugin:[[FlipperKitNetworkPlugin alloc] initWithNetworkAdapter:[SKIOSNetworkAdapter new]]];
+  [client start];
+}
+#endif
 
 @implementation AppDelegate
 
 - (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)launchOptions
 {
+#if DEBUG
+  InitializeFlipper(application);
+#endif
+
   RCTBridge *bridge = [[RCTBridge alloc] initWithDelegate:self launchOptions:launchOptions];
   RCTRootView *rootView = [[RCTRootView alloc] initWithBridge:bridge
     moduleName:@"Discourse"
     initialProperties:nil];
-
-  [Fabric with:@[[Crashlytics class]]];
 
   [PHPhotoLibrary requestAuthorization:^(PHAuthorizationStatus status) {}];
   [AVCaptureDevice requestAccessForMediaType:AVMediaTypeVideo completionHandler:^(BOOL granted) {}];
@@ -49,14 +58,11 @@
   // TODO We don't need full release debugging forever, but for now it helps
   RCTSetLogThreshold(RCTLogLevelInfo - 1);
 
-  // config BG fetch
-  [application setMinimumBackgroundFetchInterval:UIApplicationBackgroundFetchIntervalMinimum];
-
   // define UNUserNotificationCenter
   // see https://github.com/zo0r/react-native-push-notification/issues/275
   UNUserNotificationCenter *center = [UNUserNotificationCenter currentNotificationCenter];
   center.delegate = self;
-  
+
   // show statusbar when returning from a fullscreen video
   [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(videoExitFullScreen:) name:@"UIWindowDidBecomeHiddenNotification" object:nil];
 
@@ -72,12 +78,11 @@
 #endif
 }
 
-
-- (BOOL)application:(UIApplication *)application openURL:(NSURL *)url
-  sourceApplication:(NSString *)sourceApplication annotation:(id)annotation
+- (BOOL)application:(UIApplication *)application
+   openURL:(NSURL *)url
+   options:(NSDictionary<UIApplicationOpenURLOptionsKey,id> *)options
 {
-  return [RCTLinkingManager application:application openURL:url
-                      sourceApplication:sourceApplication annotation:annotation];
+  return [RCTLinkingManager application:application openURL:url options:options];
 }
 
 // Only if your app is using [Universal Links](https://developer.apple.com/library/prerelease/ios/documentation/General/Conceptual/AppSearch/UniversalLinks.html).
@@ -92,12 +97,12 @@
 // Required to register for notifications
 - (void)application:(UIApplication *)application didRegisterUserNotificationSettings:(UIUserNotificationSettings *)notificationSettings
 {
-  [RCTPushNotificationManager didRegisterUserNotificationSettings:notificationSettings];
+  [RNCPushNotificationIOS didRegisterUserNotificationSettings:notificationSettings];
 }
 // Required for the register event.
 - (void)application:(UIApplication *)application didRegisterForRemoteNotificationsWithDeviceToken:(NSData *)deviceToken
 {
-  [RCTPushNotificationManager didRegisterForRemoteNotificationsWithDeviceToken:deviceToken];
+  [RNCPushNotificationIOS didRegisterForRemoteNotificationsWithDeviceToken:deviceToken];
 }
 
 // From: https://github.com/zo0r/react-native-push-notification/issues/275
@@ -112,74 +117,27 @@
 {
   NSMutableDictionary *userData = [NSMutableDictionary dictionaryWithDictionary:response.notification.request.content.userInfo];
   [userData setObject:@(1) forKey:@"openedInForeground"];
-  [RCTPushNotificationManager didReceiveRemoteNotification:userData];
+  [RNCPushNotificationIOS didReceiveRemoteNotification:userData];
   completionHandler();
 }
 
-
--(void)applicationDidEnterBackground:(UIApplication *)application {
+// Required for the notification event. You must call the completion handler after handling the remote notification.
+- (void)application:(UIApplication *)application didReceiveRemoteNotification:(NSDictionary *)userInfo
+fetchCompletionHandler:(void (^)(UIBackgroundFetchResult))completionHandler
+{
+  [RNCPushNotificationIOS didReceiveRemoteNotification:userInfo fetchCompletionHandler:completionHandler];
 }
--(void)application:(UIApplication *)application didReceiveRemoteNotification:(NSDictionary *)userInfo fetchCompletionHandler:(void (^)(UIBackgroundFetchResult))completionHandler{
-
-  NSMutableDictionary *notification = [NSMutableDictionary dictionaryWithDictionary: userInfo];
-
-  NSString *state = nil;
-
-  if(application.applicationState == UIApplicationStateInactive) {
-    state = @"inactive";
-  } else if(application.applicationState == UIApplicationStateBackground){
-    state = @"background";
-  } else {
-    state = @"foreground";
-  }
-
-  [notification setObject: state forKey: @"AppState"];
-
-  [RCTPushNotificationManager didReceiveRemoteNotification:notification];
-
-  completionHandler(UIBackgroundFetchResultNoData);
+// Required for the registrationError event.
+- (void)application:(UIApplication *)application didFailToRegisterForRemoteNotificationsWithError:(NSError *)error
+{
+  [RNCPushNotificationIOS didFailToRegisterForRemoteNotificationsWithError:error];
 }
-
-
 // Required for the localNotification event.
 - (void)application:(UIApplication *)application didReceiveLocalNotification:(UILocalNotification *)notification
 {
-  [RCTPushNotificationManager didReceiveLocalNotification:notification];
-}
-- (void)application:(UIApplication *)application didFailToRegisterForRemoteNotificationsWithError:(NSError *)error
-{
-  NSLog(@"%@", error);
+  [RNCPushNotificationIOS didReceiveLocalNotification:notification];
 }
 
-
--(void)application:(UIApplication *)application performFetchWithCompletionHandler:(void (^)(UIBackgroundFetchResult))completionHandler
-{
-  NSLog(@"RNBackgroundFetch AppDelegate received fetch event");
-
-  UIBackgroundTaskIdentifier bgTask = [application beginBackgroundTaskWithExpirationHandler:^{
-    NSLog(@"RNBackgroundFetch execution expired!");
-    completionHandler(UIBackgroundTaskInvalid);
-    [application endBackgroundTask:bgTask];
-  }];
-
-  void (^wrappedCompletionHandler) (UIBackgroundFetchResult);
-  wrappedCompletionHandler = ^(UIBackgroundFetchResult result){
-    NSLog(@"RNBackgroundFetch completing fetch");
-    completionHandler(result);
-    [application endBackgroundTask:bgTask];
-  };
-
-  [RNBackgroundFetch gotBackgroundFetch:wrappedCompletionHandler];
-
-}
-
-- (UIInterfaceOrientationMask)application:(UIApplication *)application supportedInterfaceOrientationsForWindow:(UIWindow *)window {
-  if ([UIDevice currentDevice].userInterfaceIdiom == UIUserInterfaceIdiomPad) {
-    return UIInterfaceOrientationMaskAll;
-  } else {
-    return [Orientation getOrientation];
-  }
-}
 
 - (void)videoExitFullScreen:(id)sender
 {
